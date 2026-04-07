@@ -8,100 +8,90 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-const getMonday = (date) => {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  const monday = new Date(d.setDate(diff));
-  monday.setHours(0, 0, 0, 0);
-  return monday;
-};
-
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
   const now = new Date();
-  const currentMonday = getMonday(now);
+  const isSaturday = now.getDay() === 6;
 
-  // 1. ADD LOGIC (With better error reporting)
-  if (parsedUrl.pathname === '/add') {
-    const { chore, amount, type } = parsedUrl.query;
-    if (!chore || !amount) { 
-      res.statusCode = 400; 
-      return res.end('Missing data: chore or amount'); 
-    }
-    
-    const { error } = await supabase
+  // 1. TOTAL ALLOWANCE & SATURDAY RESET
+  if (parsedUrl.pathname === '/total') {
+    // Get all unarchived chores
+    const { data: chores, error } = await supabase
       .from('chores')
-      .insert([{ chore, amount: parseFloat(amount) }]);
+      .select('*')
+      .eq('archived', false);
 
-    if (error) {
-      console.error('SUPABASE ERROR:', error.message);
-      res.statusCode = 500;
-      res.setHeader('Content-Type', 'text/html; charset=utf-8');
-      return res.end(`<h2>Database Error</h2><p>${error.message}</p><a href="/">Back</a>`);
+    if (error) return res.end('DB Error');
+
+    const total = chores.reduce((sum, c) => sum + parseFloat(c.amount), 0);
+    let resetMsg = "";
+
+    // If it's Saturday and we have chores, archive them
+    if (isSaturday && chores.length > 0) {
+      const { error: updateError } = await supabase
+        .from('chores')
+        .update({ archived: true })
+        .eq('archived', false);
+      
+      if (!updateError) {
+        resetMsg = "<p style='color:#ef4444; font-weight:bold;'>Saturday detected: Chores have been reset and moved to history bin.</p>";
+      }
     }
 
-    if (type === 'json') {
-      res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ success: true }));
-    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.end(`
+      <html>
+      <head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif; text-align:center; padding:50px 20px; background:#f3f4f6;} .val{font-size:3rem; font-weight:800; color:#10b981;} a{display:block; margin-top:20px; color:#2563eb; text-decoration:none; font-weight:bold;}</style></head>
+      <body>
+        <h1>Total Allowance</h1>
+        <div class="val">$${total.toFixed(2)}</div>
+        ${resetMsg}
+        <a href="/">← Back to Tracker</a>
+      </body>
+      </html>`);
+  }
+
+  // 2. ADD LOGIC (Always starts as unarchived)
+  if (parsedUrl.pathname === '/add') {
+    const { chore, amount } = parsedUrl.query;
+    if (!chore || !amount) return res.end('Missing data');
+    
+    await supabase.from('chores').insert([{ 
+      chore: String(chore), 
+      amount: parseFloat(amount),
+      archived: false 
+    }]);
+
     res.writeHead(302, { 'Location': '/?success=true' });
     return res.end();
   }
 
-  // 2. RSS FEED
-  if (parsedUrl.pathname === '/rss') {
-    const { data: chores } = await supabase.from('chores').select('*').order('created_at', { ascending: false }).limit(30);
-    res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
-    const items = chores ? chores.map(c => `<item><title>${c.chore}: $${c.amount}</title><link>https://${req.headers.host}/storage</link><pubDate>${new Date(c.created_at).toUTCString()}</pubDate><guid isPermaLink="false">${c.id}</guid></item>`).join('') : '';
-    return res.end(`<?xml version="1.0" encoding="UTF-8" ?><rss version="2.0"><channel><title>Chore Log</title>${items}</channel></rss>`);
-  }
-
-  // 3. STORAGE (Past Weeks Only)
+  // 3. STORAGE (The "Bin" - Shows only archived items)
   if (parsedUrl.pathname === '/storage') {
-    const { data: chores } = await supabase.from('chores').select('*').order('created_at', { ascending: false });
+    const { data: chores } = await supabase
+      .from('chores')
+      .select('*')
+      .eq('archived', true)
+      .order('created_at', { ascending: false });
+
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-
-    const weeks = {};
-    if (chores) {
-      chores.forEach(c => {
-        const choreMonday = getMonday(c.created_at);
-        if (choreMonday.getTime() !== currentMonday.getTime()) {
-          const label = choreMonday.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-          if (!weeks[label]) weeks[label] = { items: [], total: 0 };
-          weeks[label].items.push(c);
-          weeks[label].total += parseFloat(c.amount);
-        }
-      });
-    }
-
-    let content = Object.keys(weeks).map(week => `
-      <div class="week-section">
-        <h3>Week of ${week} <span class="total">Total: $${weeks[week].total.toFixed(2)}</span></h3>
-        <table>
-          ${weeks[week].items.map(i => `<tr><td>${i.chore}</td><td style="text-align:right">$${parseFloat(i.amount).toFixed(2)}</td></tr>`).join('')}
-        </table>
-      </div>
-    `).join('');
-
-    return res.end(`<html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;padding:20px;background:#f9fafb;} .week-section{background:white;padding:15px;border-radius:12px;margin:20px auto;max-width:500px;box-shadow:0 1px 3px rgba(0,0,0,0.1);} h3{display:flex;justify-content:space-between;border-bottom:1px solid #eee;padding-bottom:8px;font-size:0.9rem;} .total{color:#10b981;} table{width:100%;font-size:0.9rem;} td{padding:8px 0;border-bottom:1px solid #f3f4f6;} .back{display:block;text-align:center;margin-top:20px;color:#2563eb;text-decoration:none;}</style></head><body><h2 style="text-align:center">Past History</h2>${content || '<p style="text-align:center">No past history.</p>'}<a href="/" class="back">← Back</a></body></html>`);
+    let rows = chores ? chores.map(c => `<tr><td>${c.chore}</td><td style="text-align:right">$${parseFloat(c.amount).toFixed(2)}</td></tr>`).join('') : '';
+    
+    return res.end(`
+      <html><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;padding:20px;} table{width:100%;} td{padding:10px 0; border-bottom:1px solid #eee;}</style></head>
+      <body><h2>History Bin</h2><table>${rows || 'No archived chores.'}</table><a href="/">Back</a></body></html>`);
   }
 
-  // 4. HOME PAGE (Current Week)
+  // 4. HOME (Current Active Chores)
   if (parsedUrl.pathname === '/') {
     const isSuccess = parsedUrl.query.success === 'true';
-    const { data: chores } = await supabase.from('chores').select('*').order('created_at', { ascending: false });
+    const { data: chores } = await supabase
+      .from('chores')
+      .select('*')
+      .eq('archived', false)
+      .order('created_at', { ascending: false });
     
-    let currentItems = [];
-    let currentTotal = 0;
-    if (chores) {
-      chores.forEach(c => {
-        if (getMonday(c.created_at).getTime() === currentMonday.getTime()) {
-          currentItems.push(c);
-          currentTotal += parseFloat(c.amount);
-        }
-      });
-    }
+    const currentTotal = chores ? chores.reduce((sum, c) => sum + parseFloat(c.amount), 0) : 0;
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.end(`
@@ -110,37 +100,36 @@ const server = http.createServer(async (req, res) => {
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-        <title>Chore Tracker</title>
         <style>
-          body { font-family: -apple-system,sans-serif; padding: 20px; background: #f3f4f6; color: #1f2937; margin: 0; }
-          .card { background: white; padding: 25px; border-radius: 20px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); max-width: 400px; margin: auto; }
-          h1 { font-size: 1.5rem; margin-bottom: 20px; text-align: center; }
-          input { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #d1d5db; border-radius: 10px; box-sizing: border-box; font-size: 16px; }
-          button { width: 100%; padding: 14px; background: #059669; color: white; border: none; border-radius: 10px; font-weight: 700; font-size: 16px; cursor: pointer; }
-          .msg { color: #059669; font-weight: 600; text-align: center; margin-bottom: 15px; display: ${isSuccess ? 'block' : 'none'}; }
-          .week-display { margin-top: 30px; text-align: left; }
-          .week-header { display: flex; justify-content: space-between; font-weight: bold; font-size: 0.9rem; border-bottom: 2px solid #f3f4f6; padding-bottom: 5px; }
-          .chore-row { display: flex; justify-content: space-between; font-size: 0.9rem; padding: 8px 0; border-bottom: 1px solid #f9fafb; }
-          .links { margin-top: 25px; display: flex; justify-content: space-around; font-size: 0.85rem; border-top: 1px solid #eee; padding-top: 15px; }
-          a { color: #2563eb; text-decoration: none; font-weight: 600; }
+          body { font-family:-apple-system,sans-serif; padding:20px; background:#f3f4f6; color:#1f2937; margin:0; text-align:center; }
+          .card { background:white; padding:25px; border-radius:20px; box-shadow:0 4px 10px rgba(0,0,0,0.05); max-width:400px; margin:auto; }
+          input { width:100%; padding:12px; margin:8px 0; border:1px solid #d1d5db; border-radius:10px; box-sizing:border-box; font-size:16px; }
+          button { width:100%; padding:14px; background:#059669; color:white; border:none; border-radius:10px; font-weight:700; cursor:pointer; }
+          .total-box { margin: 20px 0; padding:15px; background:#ecfdf5; border-radius:12px; cursor:pointer; text-decoration:none; display:block; color:inherit; }
+          .chore-list { text-align:left; font-size:0.9rem; margin-top:20px; }
+          .row { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #f9fafb; }
+          .links { margin-top:25px; display:flex; justify-content:space-around; font-size:0.85rem; border-top:1px solid #eee; padding-top:15px; }
+          a { color:#2563eb; text-decoration:none; font-weight:600; }
         </style>
       </head>
       <body>
         <div class="card">
           <h1>Chore Tracker</h1>
-          <div class="msg">✓ Saved Successfully</div>
+          <a href="/total" class="total-box">
+            <div style="font-size:0.8rem; color:#059669;">Current Balance</div>
+            <div style="font-size:1.5rem; font-weight:bold;">$${currentTotal.toFixed(2)}</div>
+          </a>
           <form action="/add" method="GET">
-            <input type="text" name="chore" placeholder="What did you do?" required autofocus>
-            <input type="number" name="amount" step="0.01" placeholder="Amount ($)" required>
-            <button type="submit">Log Chore</button>
+            <input type="text" name="chore" placeholder="Chore" required>
+            <input type="number" name="amount" step="0.01" placeholder="$ Amount" required>
+            <button type="submit">Log Entry</button>
           </form>
-          <div class="week-display">
-            <div class="week-header"><span>This Week</span><span style="color:#10b981">$${currentTotal.toFixed(2)}</span></div>
-            ${currentItems.length > 0 ? currentItems.map(i => `<div class="chore-row"><span>${i.chore}</span><span>$${parseFloat(i.amount).toFixed(2)}</span></div>`).join('') : '<p style="font-size:0.8rem; color:#9ca3af; text-align:center;">No chores this week.</p>'}
+          <div class="chore-list">
+            ${chores && chores.length > 0 ? chores.map(i => `<div class="row"><span>${i.chore}</span><span>$${parseFloat(i.amount).toFixed(2)}</span></div>`).join('') : '<p style="text-align:center;color:#9ca3af">No active chores.</p>'}
           </div>
           <div class="links">
-            <a href="/storage">Past History 📜</a>
-            <a href="/rss" style="color:#d97706">RSS Feed 📡</a>
+            <a href="/storage">History Bin 📜</a>
+            <a href="/total" style="color:#d97706">Collect / Reset 💰</a>
           </div>
         </div>
       </body>
