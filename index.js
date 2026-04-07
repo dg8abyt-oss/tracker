@@ -11,7 +11,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const getWeekStart = (dateStr) => {
   const date = new Date(dateStr);
   const day = date.getDay();
-  const diff = date.getDate() - day + (day === 0 ? -6 : 1); // Adjust to Monday
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
   const monday = new Date(date.setDate(diff));
   return monday.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
@@ -22,15 +22,14 @@ const server = http.createServer(async (req, res) => {
   if (parsedUrl.pathname === '/rss') {
     const { data: chores } = await supabase.from('chores').select('*').order('created_at', { ascending: false }).limit(30);
     res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
-    const items = chores ? chores.map(c => `<item><title>${c.chore}: $${c.amount}</title><link>https://${req.headers.host}/storage</link><description>Logged ${c.chore}</description><pubDate>${new Date(c.created_at).toUTCString()}</pubDate><guid isPermaLink="false">${c.id}</guid></item>`).join('') : '';
+    const items = chores ? chores.map(c => `<item><title>${c.chore}: $${c.amount}</title><link>https://${req.headers.host}/storage</link><pubDate>${new Date(c.created_at).toUTCString()}</pubDate><guid isPermaLink="false">${c.id}</guid></item>`).join('') : '';
     return res.end(`<?xml version="1.0" encoding="UTF-8" ?><rss version="2.0"><channel><title>Chore Log</title>${items}</channel></rss>`);
   }
 
   if (parsedUrl.pathname === '/storage') {
     const { data: chores } = await supabase.from('chores').select('*').order('created_at', { ascending: false });
-    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
 
-    // Grouping logic
     const weeks = {};
     if (chores) {
       chores.forEach(c => {
@@ -51,22 +50,25 @@ const server = http.createServer(async (req, res) => {
     `).join('');
 
     return res.end(`
-      <html>
+      <!DOCTYPE html>
+      <html lang="en">
       <head>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
-          body{font-family:-apple-system,sans-serif;padding:20px;background:#f9fafb;color:#111827;}
-          .week-section{background:white;padding:15px;border-radius:12px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1);}
-          h3{margin-top:0;font-size:1rem;display:flex;justify-content:space-between;border-bottom:1px solid #eee;padding-bottom:8px;}
-          .total{color:#10b981;}
-          table{width:100%;font-size:0.9rem;}
-          td{padding:6px 0;border-bottom:1px solid #f3f4f6;}
-          .back{display:inline-block;margin-top:10px;color:#3b82f6;text-decoration:none;font-weight:bold;}
+          body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:20px;background:#f9fafb;color:#111827;line-height:1.5;}
+          h2{text-align:center;color:#374151;}
+          .week-section{background:white;padding:20px;border-radius:12px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1);max-width:500px;margin-left:auto;margin-right:auto;}
+          h3{margin-top:0;font-size:1rem;display:flex;justify-content:space-between;border-bottom:2px solid #f3f4f6;padding-bottom:10px;color:#4b5563;}
+          .total{color:#059669;font-weight:bold;}
+          table{width:100%;font-size:0.95rem;margin-top:10px;}
+          td{padding:8px 0;border-bottom:1px solid #f3f4f6;}
+          .back{display:block;text-align:center;margin-top:20px;color:#2563eb;text-decoration:none;font-weight:600;}
         </style>
       </head>
       <body>
-        <h2>History by Week</h2>
-        ${content || '<p>No chores logged yet.</p>'}
+        <h2>Chore History</h2>
+        ${content || '<p style="text-align:center;">No chores logged yet.</p>'}
         <a href="/" class="back">← Back to Tracker</a>
       </body>
       </html>`);
@@ -83,34 +85,48 @@ const server = http.createServer(async (req, res) => {
 
   if (parsedUrl.pathname === '/') {
     const isSuccess = parsedUrl.query.success === 'true';
-    res.setHeader('Content-Type', 'text/html');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
     return res.end(`
       <!DOCTYPE html>
-      <html>
+      <html lang="en">
       <head>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+        <title>Chore Tracker</title>
         <style>
-          body { font-family: -apple-system, sans-serif; padding: 20px; background: #f0f2f5; text-align: center;}
-          .card { background: white; padding: 24px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
-          input { width: 100%; padding: 14px; margin: 10px 0; border: 1px solid #d1d5db; border-radius: 8px; box-sizing: border-box; font-size: 16px; }
-          button { width: 100%; padding: 14px; background: #10b981; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }
-          .msg { color: #059669; font-weight: bold; margin-bottom: 10px; display: ${isSuccess ? 'block' : 'none'}; }
-          .links { margin-top: 24px; display: flex; justify-content: space-around; font-size: 0.9rem; }
-          a { color: #3b82f6; text-decoration: none; font-weight: 500; }
+          body { font-family: -apple-system,BlinkMacSystemFont,sans-serif; padding: 40px 20px; background: #f3f4f6; color: #1f2937; margin: 0; }
+          .card { background: white; padding: 32px; border-radius: 20px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
+          h1 { font-size: 1.75rem; font-weight: 800; margin-bottom: 24px; color: #111827; text-align: center; letter-spacing: -0.025em; }
+          .input-group { text-align: left; margin-bottom: 16px; }
+          label { display: block; font-size: 0.875rem; font-weight: 600; color: #4b5563; margin-bottom: 6px; }
+          input { width: 100%; padding: 12px; border: 1px solid #d1d5db; border-radius: 10px; box-sizing: border-box; font-size: 16px; transition: border-color 0.2s; }
+          input:focus { outline: none; border-color: #2563eb; ring: 2px solid #2563eb; }
+          button { width: 100%; padding: 14px; background: #059669; color: white; border: none; border-radius: 10px; font-weight: 700; font-size: 16px; cursor: pointer; margin-top: 10px; transition: background 0.2s; }
+          button:hover { background: #047857; }
+          .msg { color: #059669; font-weight: 600; margin-bottom: 20px; text-align: center; padding: 10px; background: #ecfdf5; border-radius: 8px; display: ${isSuccess ? 'block' : 'none'}; }
+          .links { margin-top: 32px; display: flex; justify-content: space-around; border-top: 1px solid #f3f4f6; padding-top: 20px; }
+          a { color: #2563eb; text-decoration: none; font-size: 0.9rem; font-weight: 600; }
+          a:hover { text-decoration: underline; }
         </style>
       </head>
       <body>
         <div class="card">
-          <h1>💸 Tracker</h1>
-          <p class="msg">Chore Logged!</p>
+          <h1>Chore Tracker</h1>
+          <div class="msg">✓ Entry Saved Successfully</div>
           <form action="/add" method="GET">
-            <input type="text" name="chore" placeholder="Chore name" required autofocus>
-            <input type="number" name="amount" step="0.01" placeholder="Amount ($)" required>
-            <button type="submit">Add to Log</button>
+            <div class="input-group">
+              <label>What chore did you do?</label>
+              <input type="text" name="chore" placeholder="e.g. Cleaned kitchen" required autofocus>
+            </div>
+            <div class="input-group">
+              <label>Amount Earned</label>
+              <input type="number" name="amount" step="0.01" placeholder="0.00" required>
+            </div>
+            <button type="submit">Log Activity</button>
           </form>
           <div class="links">
-            <a href="/storage">Weekly History 📜</a>
-            <a href="/rss" style="color:#ea580c">RSS Feed 📡</a>
+            <a href="/storage">History 📜</a>
+            <a href="/rss" style="color:#d97706">RSS Feed 📡</a>
           </div>
         </div>
       </body>
