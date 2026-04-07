@@ -8,77 +8,79 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+const getWeekStart = (dateStr) => {
+  const date = new Date(dateStr);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1); // Adjust to Monday
+  const monday = new Date(date.setDate(diff));
+  return monday.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
 const server = http.createServer(async (req, res) => {
   const parsedUrl = url.parse(req.url, true);
 
-  // 1. RSS FEED (Optimized for Apple Shortcuts & Readers)
   if (parsedUrl.pathname === '/rss') {
-    const { data: chores, error } = await supabase
-      .from('chores')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(30);
-
-    if (error) {
-      res.statusCode = 500;
-      return res.end('RSS Error');
-    }
-
+    const { data: chores } = await supabase.from('chores').select('*').order('created_at', { ascending: false }).limit(30);
     res.setHeader('Content-Type', 'application/rss+xml; charset=utf-8');
-    const items = chores.map(c => `
-      <item>
-        <title>${c.chore}: $${c.amount}</title>
-        <link>https://${req.headers.host}/storage</link>
-        <description>Logged ${c.chore} for $${c.amount}</description>
-        <pubDate>${new Date(c.created_at).toUTCString()}</pubDate>
-        <guid isPermaLink="false">${c.id}</guid>
-      </item>`).join('');
-
-    return res.end(`<?xml version="1.0" encoding="UTF-8" ?>
-      <rss version="2.0">
-        <channel>
-          <title>Chore Log</title>
-          <link>https://${req.headers.host}</link>
-          <description>Recent chore activity</description>
-          ${items}
-        </channel>
-      </rss>`);
+    const items = chores ? chores.map(c => `<item><title>${c.chore}: $${c.amount}</title><link>https://${req.headers.host}/storage</link><description>Logged ${c.chore}</description><pubDate>${new Date(c.created_at).toUTCString()}</pubDate><guid isPermaLink="false">${c.id}</guid></item>`).join('') : '';
+    return res.end(`<?xml version="1.0" encoding="UTF-8" ?><rss version="2.0"><channel><title>Chore Log</title>${items}</channel></rss>`);
   }
 
-  // 2. STORAGE (View full history)
   if (parsedUrl.pathname === '/storage') {
-    const { data: chores, error } = await supabase
-      .from('chores')
-      .select('*')
-      .order('created_at', { ascending: false });
-
+    const { data: chores } = await supabase.from('chores').select('*').order('created_at', { ascending: false });
     res.setHeader('Content-Type', 'text/html');
-    let rows = chores ? chores.map(c => `<tr><td>${new Date(c.created_at).toLocaleDateString()}</td><td>${c.chore}</td><td>$${c.amount}</td></tr>`).join('') : '<tr><td colspan="3">No data</td></tr>';
-    
+
+    // Grouping logic
+    const weeks = {};
+    if (chores) {
+      chores.forEach(c => {
+        const week = getWeekStart(c.created_at);
+        if (!weeks[week]) weeks[week] = { items: [], total: 0 };
+        weeks[week].items.push(c);
+        weeks[week].total += parseFloat(c.amount);
+      });
+    }
+
+    let content = Object.keys(weeks).map(week => `
+      <div class="week-section">
+        <h3>Week of ${week} <span class="total">Total: $${weeks[week].total.toFixed(2)}</span></h3>
+        <table>
+          ${weeks[week].items.map(i => `<tr><td>${i.chore}</td><td style="text-align:right">$${parseFloat(i.amount).toFixed(2)}</td></tr>`).join('')}
+        </table>
+      </div>
+    `).join('');
+
     return res.end(`
       <html>
-      <head><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font-family:sans-serif;padding:20px;} table{width:100%; border-collapse:collapse;} th,td{padding:10px; border-bottom:1px solid #ddd; text-align:left;}</style></head>
-      <body><h2>Log History</h2><table><tr><th>Date</th><th>Chore</th><th>Amount</th></tr>${rows}</table><br><a href="/">Back</a></body>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+          body{font-family:-apple-system,sans-serif;padding:20px;background:#f9fafb;color:#111827;}
+          .week-section{background:white;padding:15px;border-radius:12px;margin-bottom:20px;box-shadow:0 1px 3px rgba(0,0,0,0.1);}
+          h3{margin-top:0;font-size:1rem;display:flex;justify-content:space-between;border-bottom:1px solid #eee;padding-bottom:8px;}
+          .total{color:#10b981;}
+          table{width:100%;font-size:0.9rem;}
+          td{padding:6px 0;border-bottom:1px solid #f3f4f6;}
+          .back{display:inline-block;margin-top:10px;color:#3b82f6;text-decoration:none;font-weight:bold;}
+        </style>
+      </head>
+      <body>
+        <h2>History by Week</h2>
+        ${content || '<p>No chores logged yet.</p>'}
+        <a href="/" class="back">← Back to Tracker</a>
+      </body>
       </html>`);
   }
 
-  // 3. ADD ENDPOINT (UI + JSON support)
   if (parsedUrl.pathname === '/add') {
     const { chore, amount, type } = parsedUrl.query;
     if (!chore || !amount) { res.statusCode = 400; return res.end('Missing data'); }
-    
-    const { error } = await supabase.from('chores').insert([{ chore, amount: parseFloat(amount) }]);
-    if (error) { res.statusCode = 500; return res.end('DB Error'); }
-
-    if (type === 'json') {
-      res.setHeader('Content-Type', 'application/json');
-      return res.end(JSON.stringify({ success: true }));
-    }
+    await supabase.from('chores').insert([{ chore, amount: parseFloat(amount) }]);
+    if (type === 'json') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ success: true })); }
     res.writeHead(302, { 'Location': '/?success=true' });
     return res.end();
   }
 
-  // 4. MAIN UI
   if (parsedUrl.pathname === '/') {
     const isSuccess = parsedUrl.query.success === 'true';
     res.setHeader('Content-Type', 'text/html');
@@ -86,28 +88,28 @@ const server = http.createServer(async (req, res) => {
       <!DOCTYPE html>
       <html>
       <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
         <style>
-          body { font-family: sans-serif; padding: 20px; background: #f0f2f5; text-align: center;}
-          .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
-          input { width: 100%; padding: 10px; margin: 10px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font-size: 16px; }
-          button { width: 100%; padding: 12px; background: #10b981; color: white; border: none; border-radius: 6px; font-weight: bold; font-size: 16px; }
-          .msg { color: #059669; font-weight: bold; display: ${isSuccess ? 'block' : 'none'}; }
-          .links { margin-top: 20px; display: flex; justify-content: space-around; font-size: 0.8rem; }
-          a { color: #3b82f6; text-decoration: none; }
+          body { font-family: -apple-system, sans-serif; padding: 20px; background: #f0f2f5; text-align: center;}
+          .card { background: white; padding: 24px; border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
+          input { width: 100%; padding: 14px; margin: 10px 0; border: 1px solid #d1d5db; border-radius: 8px; box-sizing: border-box; font-size: 16px; }
+          button { width: 100%; padding: 14px; background: #10b981; color: white; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; }
+          .msg { color: #059669; font-weight: bold; margin-bottom: 10px; display: ${isSuccess ? 'block' : 'none'}; }
+          .links { margin-top: 24px; display: flex; justify-content: space-around; font-size: 0.9rem; }
+          a { color: #3b82f6; text-decoration: none; font-weight: 500; }
         </style>
       </head>
       <body>
         <div class="card">
           <h1>💸 Tracker</h1>
-          <p class="msg">Success! Logged to DB.</p>
+          <p class="msg">Chore Logged!</p>
           <form action="/add" method="GET">
-            <input type="text" name="chore" placeholder="Chore" required>
-            <input type="number" name="amount" step="0.01" placeholder="$ Amount" required>
-            <button type="submit">Log Entry</button>
+            <input type="text" name="chore" placeholder="Chore name" required autofocus>
+            <input type="number" name="amount" step="0.01" placeholder="Amount ($)" required>
+            <button type="submit">Add to Log</button>
           </form>
           <div class="links">
-            <a href="/storage">View History 📜</a>
+            <a href="/storage">Weekly History 📜</a>
             <a href="/rss" style="color:#ea580c">RSS Feed 📡</a>
           </div>
         </div>
